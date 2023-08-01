@@ -25,6 +25,8 @@ namespace ESM
 		void OnImGuiRender();
 
 		void BasicSMapPass();
+		void ESMPass();
+		void ESMBlurPass();
 		void RenderPass();
 		void GammaCorrectionPass();
 
@@ -38,8 +40,10 @@ namespace ESM
 		void SetBuffers();
 		void SetTextures();
 		void SetSwapChain();
+		void SetESMBlurKernel(int radius, float sigma);
 		void ResizeBasicSMap(uint32_t width, uint32_t height);
-		void ResizeVSMMS(uint32_t width, uint32_t height, int sample);
+		void ResizeESM(uint32_t width, uint32_t height);
+		void ResizeESMMS(uint32_t width, uint32_t height, int samples);
 
 
 
@@ -61,6 +65,18 @@ namespace ESM
 
 		// controls
 		bool m_drawDirLightFrustum = false;
+
+		bool m_useESM = false;
+		bool m_blurESM = false;
+		DirectX::XMUINT2 m_esmSize = { 512, 512 };
+		bool m_esmlinearizeDepth = false;
+		float m_esmExpScalarC = 80.0f;
+		int m_esmGaussBlurRadius = 4;
+		float m_esmGaussBlurSigma = 1.5f;
+		int m_esmSamplesArrayIndex = 0;
+		int m_esmSamples = 2;
+		int m_esmSamplerArrayIndex = 2;
+		std::string m_esmSampler;
 
 		DirectX::XMUINT2 m_basicSMapSize = { 512, 512 };
 		int m_basicSMapPCF = 4;

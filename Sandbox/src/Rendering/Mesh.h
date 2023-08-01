@@ -20,6 +20,7 @@ namespace ESM
 
 		void Render();
 		void RenderBasicSMap();
+		void RenderESM();
 
 		void ShowImGuiControl(const std::string& label);
 

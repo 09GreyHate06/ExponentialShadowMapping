@@ -12,9 +12,17 @@
 #define DSV_SCENE_MS "scene_ms"
 #define SRV_SCENE "scene"
 
-// normap shadow map
+// basic shadow map
 #define DSV_BASIC_SMAP	"basic_smap"
 #define SRV_BASIC_SMAP	"basic_smap"
+
+// exponential shadow map
+#define RTV_ESM_MS "esm_ms"
+#define DSV_ESM_MS "esm_ms"
+#define RTV_ESM	"esm"
+#define SRV_ESM	"esm"
+#define RTV_ESM_TEMP "esm_temp"
+#define SRV_ESM_TEMP "esm_temp"
 
 // shaders
 #define NULL_SHADER "null"
@@ -27,6 +35,7 @@
 #define VS_BASIC "basic"
 #define PS_BASIC "basic"
 #define IL_BASIC "basic"
+#define PS_ESM   "esm"
 #define PS_BLUR  "blur"
 
 // cbuf
@@ -40,6 +49,7 @@
 #define CB_PS_BASIC_ENTITY "basic.ps.EntityCBuf"
 #define CB_PS_BLUR_KERNEL  "blur.ps.KernelCBuf"
 #define CB_PS_BLUR_CONTROL "blur.ps.ControlCBuf"
+#define CB_PS_ESM_SYSTEM   "esm.ps.SystemCBuf"
 
 // mesh
 #define VB_CUBE "cube.vb"

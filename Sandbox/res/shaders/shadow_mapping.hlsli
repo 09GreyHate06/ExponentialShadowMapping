@@ -1,7 +1,7 @@
 
 float LinearizeDepth(float z, float n, float f)
 {
-    return -(z * (n - f) - n * f) / f;
+    return -f * n / (f * z - n * z - f);
 }
 
 float ShadowMappingPCF3x3(Texture2D<float> smap, SamplerComparisonState smapSampler, float4 pixelLightSpace)
@@ -144,4 +144,22 @@ float ShadowMapping(Texture2D<float> smap, SamplerComparisonState smapSampler, f
     }
     
     return shadow;
+}
+
+float ExponentialShadowMapping(Texture2D<float> smap, SamplerState smapSampler, float4 pixelLightSpace, bool linearizeDepth, float nearZ, float farZ, float expScalarC)
+{
+    float shadow = 1.0f;
+    
+    float3 projCoord = pixelLightSpace.xyz / pixelLightSpace.w;
+    if (projCoord.z > 1.0f)
+        return shadow;
+    
+    projCoord.x = projCoord.x * 0.5f + 0.5f;
+    projCoord.y = -projCoord.y * 0.5f + 0.5f;
+    
+    const float e_cz = smap.Sample(smapSampler, projCoord.xy); // e^cz
+    const float d = linearizeDepth ? LinearizeDepth(projCoord.z, nearZ, farZ) : projCoord.z;
+    const float e_ncd = exp(-expScalarC * d); // e^-cd
+    return saturate(e_cz * e_ncd);
+
 }

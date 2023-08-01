@@ -116,6 +116,30 @@ namespace ESM
         m_resLib->Get<VertexShader>(NULL_SHADER)->Bind();
     }
 
+    void Mesh::RenderESM()
+    {
+        auto vs = m_resLib->Get<VertexShader>(VS_BASIC);
+        m_resLib->Get<PixelShader>(PS_ESM)->Bind();
+        vs->Bind();
+        m_resLib->Get<InputLayout>(IL_BASIC)->Bind();
+
+        {
+            XMFLOAT4X4 transform_;
+            XMStoreFloat4x4(&transform_, XMMatrixTranspose(transform.GetTransform()));
+            auto cbuf = m_resLib->Get<Buffer>(CB_VS_BASIC_ENTITY);
+            cbuf->SetData(&transform_);
+            cbuf->VSBindAsCBuf(vs->GetResBinding("EntityCBuf"));
+        }
+
+        m_vb->BindAsVB();
+        m_ib->BindAsIB(DXGI_FORMAT_R32_UINT);
+        m_context->GetDeviceContext()->IASetPrimitiveTopology(topology);
+        GDX11_CONTEXT_THROW_INFO_ONLY(m_context->GetDeviceContext()->DrawIndexed(m_ib->GetDesc().ByteWidth / sizeof(uint32_t), 0, 0));
+
+        m_resLib->Get<VertexShader>(NULL_SHADER)->Bind();
+        m_resLib->Get<PixelShader>(NULL_SHADER)->Bind();
+    }
+
     void Mesh::ShowImGuiControl(const std::string& label)
     {
 

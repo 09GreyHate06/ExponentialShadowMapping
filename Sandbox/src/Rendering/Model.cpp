@@ -47,6 +47,15 @@ namespace ESM
 		}
 	}
 
+	void Model::RenderESM()
+	{
+		for (int i = 0; i < m_meshes.size(); i++)
+		{
+			m_meshes[i].transform = transform;
+			m_meshes[i].RenderESM();
+		}
+	}
+
 	void Model::ShowImGuiControl(const std::string& label)
 	{
 

@@ -30,6 +30,16 @@ cbuffer SystemCBuf : register(b0)
         uint pcfLevel;
         float3 p0;
     } basicSMapControl;
+    
+    struct ESMControl
+    {
+        bool useESM;
+        bool linearizeDepth;
+        float nearZ; // light space near
+        float farZ; // light space far
+        float expScalarC;
+        float3 p0;
+    } esmControl;
 };
 
 cbuffer EntityCBuf : register(b1)
@@ -54,6 +64,9 @@ SamplerState matSampler : register(s0);
 
 Texture2D<float> smap : register(t3);
 SamplerComparisonState smapSampler : register(s1);
+
+Texture2D<float> esm : register(t4);
+SamplerState esmSampler : register(s2);
 
 float4 main(VSOutput input) : SV_Target
 {
@@ -82,7 +95,11 @@ float4 main(VSOutput input) : SV_Target
     clip(pixelCol.a - 0.0001f);
     
     // light calculation
-    float shadow = ShadowMapping(smap, smapSampler, mul(float4(input.pixelWorldSpacePos, 1.0f), dirLight.lightSpace), basicSMapControl.pcfLevel);
+    float shadow = 0.0f;
+    if (esmControl.useESM)
+        shadow = ExponentialShadowMapping(esm, esmSampler, mul(float4(input.pixelWorldSpacePos, 1.0f), dirLight.lightSpace), esmControl.linearizeDepth, esmControl.nearZ, esmControl.farZ, esmControl.expScalarC);
+    else
+        shadow = ShadowMapping(smap, smapSampler, mul(float4(input.pixelWorldSpacePos, 1.0f), dirLight.lightSpace), basicSMapControl.pcfLevel);
     
     float3 pixelToLight = normalize(-dirLight.direction);
     float3 phong = Phong(dirLight.color, pixelToLight, pixelToView, normal, dirLight.ambientIntensity, dirLight.intensity, mat.shininess, shadow);

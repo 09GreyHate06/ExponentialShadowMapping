@@ -16,8 +16,8 @@ namespace ESM
     App::App()
     {
         WindowDesc wd = {};
-        wd.name = "VSM";
-        wd.className = "VSM";
+        wd.name = "ESM";
+        wd.className = "ESM";
         wd.width = 1280;
         wd.height = 720;
         m_window = std::make_unique<Window>(wd);
@@ -32,6 +32,10 @@ namespace ESM
         SetBuffers();
         SetTextures();
         ResizeBasicSMap(m_basicSMapSize.x, m_basicSMapSize.y);
+        ResizeESM(m_esmSize.x, m_esmSize.y);
+        ResizeESMMS(m_esmSize.x, m_esmSize.y, m_esmSamples);
+        SetESMBlurKernel(m_esmGaussBlurRadius, m_esmGaussBlurSigma);
+        m_esmSampler = SS_ANISO_CLAMP;
 
         m_imguiManager.Set(m_window.get(), m_context.get());
 
@@ -131,7 +135,17 @@ namespace ESM
 
     void App::OnRender()
     {
-        BasicSMapPass();
+        if (m_useESM)
+        {
+            ESMPass();
+            if (m_blurESM)
+                ESMBlurPass();
+        }
+        else
+        {
+            BasicSMapPass();
+        }
+
         RenderPass();
         GammaCorrectionPass();
     }
@@ -161,7 +175,7 @@ namespace ESM
                 m_dirLight.SetShadowNearZ(nz);
 
             float fz = m_dirLight.GetShadowFarZ();
-            if (ImGui::DragFloat("Near Z", &fz, 0.1f, 0.1f, 10000.0f))
+            if (ImGui::DragFloat("Far Z", &fz, 0.1f, 0.1f, 10000.0f))
                 m_dirLight.SetShadowFarZ(fz);
 
             ImGui::Checkbox("Draw frustum", &m_drawDirLightFrustum);
@@ -189,9 +203,82 @@ namespace ESM
             ImGui::End();
         }
 
-        ImGui::Begin("Basic Shadow Map Texture");
-        ImGui::Image(m_resLib.Get<ShaderResourceView>(SRV_BASIC_SMAP)->GetNative(), ImVec2((float)m_basicSMapSize.x, (float)m_basicSMapSize.y));
-        ImGui::End();
+
+        if (ImGui::Begin("Exponential Shadow Map"))
+        {
+            ImGui::PushItemWidth(110.0f);
+
+            ImGui::Checkbox("Enable", &m_useESM);
+
+            if (ImGui::DragInt2("Size", (int*)&m_esmSize.x, 1.0f, 0))
+            {
+                ResizeESM(m_esmSize.x, m_esmSize.y);
+                ResizeESMMS(m_esmSize.x, m_esmSize.y, m_esmSamples);
+            }
+
+            ImGui::Checkbox("Linearize depth", &m_esmlinearizeDepth);
+            ImGui::DragFloat("Exponential scalar", &m_esmExpScalarC, 0.1f);
+
+            static const char* sampleItems[] = { "MSAA 2x", "MSAA 4x", "MSAA 8x" };
+            if (ImGui::Combo("Sample Count", &m_esmSamplesArrayIndex, sampleItems, 3))
+            {
+                switch (m_esmSamplesArrayIndex)
+                {
+                case 0:
+                    m_esmSamples= 2;
+                    break;
+                case 1:
+                    m_esmSamples= 4;
+                    break;
+                case 2:
+                    m_esmSamples= 8;
+                    break;
+                }
+
+                ResizeESMMS(m_esmSize.x, m_esmSize.y, m_esmSamples);
+            }
+
+            static const char* samplerItems[] = { "Point", "Linear", "Anisotropic" };
+            if (ImGui::Combo("Sampler", &m_esmSamplerArrayIndex, samplerItems, 3))
+            {
+                switch (m_esmSamplerArrayIndex)
+                {
+                case 0:
+                    m_esmSampler = SS_POINT_CLAMP;
+                    break;
+                case 1:
+                    m_esmSampler = SS_LINEAR_CLAMP;
+                    break;
+                case 2:
+                    m_esmSampler = SS_ANISO_CLAMP;
+                    break;
+                }
+            }
+
+            ImGui::PopItemWidth();
+            ImGui::End();
+        }
+
+        if (ImGui::Begin("ESM Gaussian blur"))
+        {
+            ImGui::PushItemWidth(110.0f);
+
+            ImGui::Checkbox("Enable", &m_blurESM);
+            if (ImGui::DragInt("Radius", &m_esmGaussBlurRadius, 0.1f, 0, 17))
+            {
+                m_esmGaussBlurRadius = std::max(0, m_esmGaussBlurRadius);
+                SetESMBlurKernel(m_esmGaussBlurRadius, m_esmGaussBlurSigma);
+            }
+            if (ImGui::DragFloat("Sigma", &m_esmGaussBlurSigma, 0.01f))
+            {
+                m_esmGaussBlurSigma = std::max(0.0f, m_esmGaussBlurSigma);
+                SetESMBlurKernel(m_esmGaussBlurRadius, m_esmGaussBlurSigma);
+            }
+
+            ImGui::PopItemWidth();
+            ImGui::End();
+        }
+
 
         ImGui::Begin("FPS");
         ImGui::Text(std::to_string(m_time.GetDeltaTime()).c_str());
@@ -234,6 +321,145 @@ namespace ESM
         m_model->RenderBasicSMap();
     }
 
+    void App::ESMPass()
+    {
+        D3D11_VIEWPORT vp = {};
+        vp.TopLeftX = 0.0f;
+        vp.TopLeftY = 0.0f;
+        vp.Width = (float)m_esmSize.x;
+        vp.Height = (float)m_esmSize.y;
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+        m_context->GetDeviceContext()->RSSetViewports(1, &vp);
+
+        m_resLib.Get<RasterizerState>(RES_DEFAULT)->Bind();
+        m_resLib.Get<BlendState>(RES_DEFAULT)->Bind(nullptr, 0xff);
+        m_resLib.Get<DepthStencilState>(RES_DEFAULT)->Bind(0xff);
+
+        auto rtv = m_resLib.Get<RenderTargetView>(RTV_ESM_MS);
+        auto dsv = m_resLib.Get<DepthStencilView>(DSV_ESM_MS);
+        dsv->Clear(D3D11_CLEAR_DEPTH, 1.0f, 0xff);
+        rtv->Clear(1.0f, 1.0f, 1.0f, 1.0f);
+        rtv->Bind(dsv.get());
+
+        auto vs = m_resLib.Get<VertexShader>(VS_BASIC);
+        auto ps = m_resLib.Get<PixelShader>(PS_ESM);
+        {
+            XMFLOAT4X4 lightSpace;
+            XMStoreFloat4x4(&lightSpace, XMMatrixTranspose(m_dirLight.GetLightSpace()));
+            auto cbuf = m_resLib.Get<Buffer>(CB_VS_BASIC_SYSTEM);
+            cbuf->SetData(&lightSpace);
+            cbuf->VSBindAsCBuf(vs->GetResBinding("SystemCBuf"));
+        }
+
+        {
+            ESMCBuf::PSSystem data = {};
+            data.linearizeDepth = m_esmlinearizeDepth;
+            data.expScalarC = m_esmExpScalarC;
+            data.nearZ = m_dirLight.GetShadowNearZ();
+            data.farZ = m_dirLight.GetShadowFarZ();
+            auto cbuf = m_resLib.Get<Buffer>(CB_PS_ESM_SYSTEM);
+            cbuf->SetData(&data);
+            cbuf->PSBindAsCBuf(ps->GetResBinding("SystemCBuf"));
+        }
+
+        m_cube.RenderESM();
+        m_plane.RenderESM();
+        m_model->RenderESM();
+
+        // temporary resolve the ms smap to final srv
+        auto smap = m_resLib.Get<ShaderResourceView>(SRV_ESM);
+        {
+            auto rtvMS = m_resLib.Get<RenderTargetView>(RTV_ESM_MS);
+            GDX11_CONTEXT_THROW_INFO_ONLY(m_context->GetDeviceContext()->ResolveSubresource(smap->GetTexture2D()->GetNative(), D3D11CalcSubresource(0, 0, 1),
+                rtvMS->GetTexture2D()->GetNative(), D3D11CalcSubresource(0, 0, 1), DXGI_FORMAT_R32_FLOAT));
+
+            if (!m_blurESM)
+                m_context->GetDeviceContext()->GenerateMips(m_resLib.Get<ShaderResourceView>(SRV_ESM)->GetNative());
+        }
+    }
+
+    void App::ESMBlurPass()
+    {
+        D3D11_VIEWPORT vp = {};
+        vp.TopLeftX = 0.0f;
+        vp.TopLeftY = 0.0f;
+        vp.Width = (float)m_esmSize.x;
+        vp.Height = (float)m_esmSize.y;
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+        m_context->GetDeviceContext()->RSSetViewports(1, &vp);
+
+        m_resLib.Get<RasterizerState>(RES_DEFAULT)->Bind();
+        m_resLib.Get<BlendState>(RES_DEFAULT)->Bind(nullptr, 0xff);
+        m_resLib.Get<DepthStencilState>(RES_DEFAULT)->Bind(0xff);
+
+        m_resLib.Get<VertexShader>(VS_FS_OUT_TC_POS)->Bind();
+        auto ps = m_resLib.Get<PixelShader>(PS_BLUR);
+        ps->Bind();
+        m_resLib.Get<InputLayout>(IL_FS_OUT_TC_POS)->Bind();
+
+        // vertical blur
+        {
+            auto rtv = m_resLib.Get<RenderTargetView>(RTV_ESM_TEMP);
+            rtv->Clear(1.0f, 1.0f, 1.0f, 1.0f);
+            rtv->Bind(nullptr);
+
+            // bind smap
+            m_resLib.Get<ShaderResourceView>(SRV_ESM)->PSBind(ps->GetResBinding("tex"));
+            m_resLib.Get<SamplerState>(SS_POINT_CLAMP)->PSBind(ps->GetResBinding("samplerState"));
+
+            // set cbufs
+            {
+                m_resLib.Get<Buffer>(CB_PS_BLUR_KERNEL)->PSBindAsCBuf(ps->GetResBinding("KernelCBuf"));
+
+                BlurCBuf::PSControl data = {};
+                data.texelStep = { 0.0f, 1.0f / m_esmSize.y };
+                auto cbuf = m_resLib.Get<Buffer>(CB_PS_BLUR_CONTROL);
+                cbuf->SetData(&data);
+                cbuf->PSBindAsCBuf(ps->GetResBinding("ControlCBuf"));
+            }
+
+            m_resLib.Get<Buffer>(VB_FS_QUAD)->BindAsVB();
+            auto ib = m_resLib.Get<Buffer>(IB_FS_QUAD);
+            ib->BindAsIB(DXGI_FORMAT_R32_UINT);
+            m_context->GetDeviceContext()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            GDX11_CONTEXT_THROW_INFO_ONLY(m_context->GetDeviceContext()->DrawIndexed(ib->GetDesc().ByteWidth / sizeof(uint32_t), 0, 0));
+        }
+
+        // horizontal blur
+        {
+            auto rtv = m_resLib.Get<RenderTargetView>(RTV_ESM);
+            rtv->Clear(1.0f, 1.0f, 1.0f, 1.0f);
+            rtv->Bind(nullptr);
+
+            // bind smap
+            m_resLib.Get<ShaderResourceView>(SRV_ESM_TEMP)->PSBind(ps->GetResBinding("tex"));
+            m_resLib.Get<SamplerState>(SS_POINT_CLAMP)->PSBind(ps->GetResBinding("samplerState"));
+
+            // set cbufs
+            {
+                m_resLib.Get<Buffer>(CB_PS_BLUR_KERNEL)->PSBindAsCBuf(ps->GetResBinding("KernelCBuf"));
+
+                BlurCBuf::PSControl data = {};
+                data.texelStep = { 1.0f / m_esmSize.x, 0.0f };
+                auto cbuf = m_resLib.Get<Buffer>(CB_PS_BLUR_CONTROL);
+                cbuf->SetData(&data);
+                cbuf->PSBindAsCBuf(ps->GetResBinding("ControlCBuf"));
+            }
+
+            m_resLib.Get<Buffer>(VB_FS_QUAD)->BindAsVB();
+            auto ib = m_resLib.Get<Buffer>(IB_FS_QUAD);
+            ib->BindAsIB(DXGI_FORMAT_R32_UINT);
+            m_context->GetDeviceContext()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            GDX11_CONTEXT_THROW_INFO_ONLY(m_context->GetDeviceContext()->DrawIndexed(ib->GetDesc().ByteWidth / sizeof(uint32_t), 0, 0));
+        }
+
+        m_resLib.Get<VertexShader>(NULL_SHADER)->Bind();
+        m_resLib.Get<PixelShader>(NULL_SHADER)->Bind();
+        m_context->GetDeviceContext()->GenerateMips(m_resLib.Get<ShaderResourceView>(SRV_ESM)->GetNative());
+    }
+
     void App::RenderPass()
     {
         D3D11_VIEWPORT vp = {};
@@ -263,8 +489,13 @@ namespace ESM
             auto vs = m_resLib.Get<VertexShader>(VS_PHONG);
             auto ps = m_resLib.Get<PixelShader>(PS_PHONG);
 
+            m_resLib.Get<SamplerState>(m_esmSampler)->PSBind(ps->GetResBinding("esmSampler"));
             m_resLib.Get<SamplerState>(SS_CMP_LESS_EQUAL_LINEAR_CLAMP)->PSBind(ps->GetResBinding("smapSampler"));
-            m_resLib.Get<ShaderResourceView>(SRV_BASIC_SMAP)->PSBind(ps->GetResBinding("smap"));
+
+            if (m_useESM)
+                m_resLib.Get<ShaderResourceView>(SRV_ESM)->PSBind(ps->GetResBinding("esm"));
+            else
+                m_resLib.Get<ShaderResourceView>(SRV_BASIC_SMAP)->PSBind(ps->GetResBinding("smap"));
 
             {
                 PhongCBuf::VSSystem data = {};
@@ -285,6 +516,11 @@ namespace ESM
                 data.dirLight.ambientIntensity = m_dirLight.GetAmbientIntensity();
                 data.dirLight.lightSpace = lightSpace;
                 data.basicSMapControl.pcfLevel = (uint32_t)m_basicSMapPCF;
+                data.esmControl.useESM = m_useESM;
+                data.esmControl.linearizeDepth = m_esmlinearizeDepth;
+                data.esmControl.expScalarC = m_esmExpScalarC;
+                data.esmControl.nearZ = m_dirLight.GetShadowNearZ();
+                data.esmControl.farZ = m_dirLight.GetShadowFarZ();
                 XMStoreFloat3(&data.dirLight.direction, m_dirLight.GetDirection());
                 auto cbuf = m_resLib.Get<Buffer>(CB_PS_PHONG_SYSTEM);
                 cbuf->SetData(&data);
@@ -503,6 +739,8 @@ namespace ESM
         m_resLib.Add(VS_FS_OUT_TC_POS, VertexShader::Create(m_context.get(), "res/cso/fullscreen_out_tc_pos.vs.cso"));
         m_resLib.Add(PS_GAMMA_CORRECTION, PixelShader::Create(m_context.get(), "res/cso/gamma_correction.ps.cso"));
         m_resLib.Add(IL_FS_OUT_TC_POS, InputLayout::Create(m_context.get(), m_resLib.Get<VertexShader>(VS_FS_OUT_TC_POS)));
+
+        m_resLib.Add(PS_ESM, PixelShader::Create(m_context.get(), "res/cso/esm.ps.cso"));
 
         m_resLib.Add(PS_BLUR, PixelShader::Create(m_context.get(), "res/cso/blur.ps.cso"));
     }
@@ -775,6 +1013,18 @@ namespace ESM
             m_resLib.Add(CB_PS_BLUR_CONTROL, Buffer::Create(m_context.get(), desc, nullptr));
         }
 
+        // esm cbufs
+        {
+            D3D11_BUFFER_DESC desc = {};
+            desc.ByteWidth = sizeof(ESMCBuf::PSSystem);
+            desc.Usage = D3D11_USAGE_DYNAMIC;
+            desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            desc.MiscFlags = 0;
+            desc.StructureByteStride = 0;
+            m_resLib.Add(CB_PS_ESM_SYSTEM, Buffer::Create(m_context.get(), desc, nullptr));
+        }
+
         // gamma_correction cbufs
         {
             D3D11_BUFFER_DESC desc = {};
@@ -912,6 +1162,31 @@ namespace ESM
         m_context->SetSwapChain(scDesc);
     }
 
+    void App::SetESMBlurKernel(int radius, float sigma)
+    {
+        BlurCBuf::PSKernel k = {};
+        k.nTaps = radius * 2u + 1u;
+        float sum = 0.0f;
+        for (int i = 0; i < (int)k.nTaps; i++)
+        {
+            const float x = (float)i - radius;
+            const float gauss = Gauss(x, sigma);
+            sum += gauss;
+            k.coefficients[i].x = gauss;
+        }
+        for (int i = 0; i < (int)k.nTaps; i++)
+        {
+            k.coefficients[i].x /= sum;
+        }
+
+        //k.nTaps = radius * 2u + 1u;
+        //float c = 1.0f / k.nTaps;
+        //for (int i = 0; i < (int)k.nTaps; i++)
+        //    k.coefficients[i].x = c;
+
+        m_resLib.Get<Buffer>(CB_PS_BLUR_KERNEL)->SetData(&k);
+    }
+
     void App::ResizeBasicSMap(uint32_t width, uint32_t height)
     {
         if (m_resLib.Exist<DepthStencilView>(DSV_BASIC_SMAP))
@@ -937,6 +1212,7 @@ namespace ESM
         D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
         dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
         dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+        dsvDesc.Texture2D.MipSlice = 0;
         m_resLib.Add(DSV_BASIC_SMAP, DepthStencilView::Create(m_context.get(), dsvDesc, tex));
 
         D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -946,5 +1222,129 @@ namespace ESM
         srvDesc.Texture2D.MostDetailedMip = 0;
         m_resLib.Add(SRV_BASIC_SMAP, ShaderResourceView::Create(m_context.get(), srvDesc, tex));
     }
+
+    void App::ResizeESM(uint32_t width, uint32_t height)
+    {
+        if (m_resLib.Exist<RenderTargetView>(RTV_ESM))
+        {
+            m_resLib.Remove<RenderTargetView>(RTV_ESM);
+            m_resLib.Remove<ShaderResourceView>(SRV_ESM);
+            m_resLib.Remove<RenderTargetView>(RTV_ESM_TEMP);
+            m_resLib.Remove<ShaderResourceView>(SRV_ESM_TEMP);
+        }
+
+
+        {
+            D3D11_TEXTURE2D_DESC texDesc = {};
+            texDesc.Width = width;
+            texDesc.Height = height;
+            texDesc.MipLevels = 0;
+            texDesc.ArraySize = 1;
+            texDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            texDesc.SampleDesc.Count = 1;
+            texDesc.SampleDesc.Quality = 0;
+            texDesc.Usage = D3D11_USAGE_DEFAULT;
+            texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+            texDesc.CPUAccessFlags = 0;
+            texDesc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+            auto tex = Texture2D::Create(m_context.get(), texDesc, (const void*)nullptr);
+
+            D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+            rtvDesc.Format = texDesc.Format;
+            rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            rtvDesc.Texture2D.MipSlice = 0;
+            m_resLib.Add(RTV_ESM, RenderTargetView::Create(m_context.get(), rtvDesc, tex));
+
+            D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+            srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Texture2D.MipLevels = -1;
+            srvDesc.Texture2D.MostDetailedMip = 0;
+            m_resLib.Add(SRV_ESM, ShaderResourceView::Create(m_context.get(), srvDesc, tex));
+        }
+
+
+        // temp rtv for bluring
+        {
+            D3D11_TEXTURE2D_DESC texDesc = {};
+            texDesc.Width = width;
+            texDesc.Height = height;
+            texDesc.MipLevels = 1;
+            texDesc.ArraySize = 1;
+            texDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            texDesc.SampleDesc.Count = 1;
+            texDesc.SampleDesc.Quality = 0;
+            texDesc.Usage = D3D11_USAGE_DEFAULT;
+            texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+            texDesc.CPUAccessFlags = 0;
+            texDesc.MiscFlags = 0;
+            auto tex = Texture2D::Create(m_context.get(), texDesc, (const void*)nullptr);
+
+            D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+            rtvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            rtvDesc.Texture2D.MipSlice = 0;
+            m_resLib.Add(RTV_ESM_TEMP, RenderTargetView::Create(m_context.get(), rtvDesc, tex));
+
+            D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+            srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Texture2D.MipLevels = 1;
+            srvDesc.Texture2D.MostDetailedMip = 0;
+            m_resLib.Add(SRV_ESM_TEMP, ShaderResourceView::Create(m_context.get(), srvDesc, tex));
+        }
+    }
+
+    void App::ResizeESMMS(uint32_t width, uint32_t height, int samples)
+    {
+        if (m_resLib.Exist<RenderTargetView>(RTV_ESM_MS))
+        {
+            m_resLib.Remove<RenderTargetView>(RTV_ESM_MS);
+            m_resLib.Remove<DepthStencilView>(DSV_ESM_MS);
+        }
+
+        {
+            D3D11_TEXTURE2D_DESC texDesc = {};
+            texDesc.Width = width;
+            texDesc.Height = height;
+            texDesc.MipLevels = 1;
+            texDesc.ArraySize = 1;
+            texDesc.Format = DXGI_FORMAT_D32_FLOAT;
+            texDesc.SampleDesc.Count = samples;
+            texDesc.SampleDesc.Quality = D3D11_STANDARD_MULTISAMPLE_PATTERN;
+            texDesc.Usage = D3D11_USAGE_DEFAULT;
+            texDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+            texDesc.CPUAccessFlags = 0;
+            texDesc.MiscFlags = 0;
+            auto tex = Texture2D::Create(m_context.get(), texDesc, (const void*)nullptr);
+
+            D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+            dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+            dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DMS;
+            m_resLib.Add(DSV_ESM_MS, DepthStencilView::Create(m_context.get(), dsvDesc, tex));
+        }
+
+        {
+            D3D11_TEXTURE2D_DESC texDesc = {};
+            texDesc.Width = width;
+            texDesc.Height = height;
+            texDesc.MipLevels = 1;
+            texDesc.ArraySize = 1;
+            texDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            texDesc.SampleDesc.Count = samples;
+            texDesc.SampleDesc.Quality = D3D11_STANDARD_MULTISAMPLE_PATTERN;
+            texDesc.Usage = D3D11_USAGE_DEFAULT;
+            texDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+            texDesc.CPUAccessFlags = 0;
+            texDesc.MiscFlags = 0;
+            auto tex = Texture2D::Create(m_context.get(), texDesc, (const void*)nullptr);
+
+            D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+            rtvDesc.Format = texDesc.Format;
+            rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMS;
+            m_resLib.Add(RTV_ESM_MS, RenderTargetView::Create(m_context.get(), rtvDesc, tex));
+        }
+    }
+
 #pragma endregion Resources
 }

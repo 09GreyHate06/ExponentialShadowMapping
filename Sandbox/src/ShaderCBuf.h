@@ -34,6 +34,16 @@ namespace ESM
 				uint32_t pcfLevel;
 				DirectX::XMFLOAT3 p0;
 			} basicSMapControl;
+
+			struct ESMControl
+			{
+				BOOL useESM;
+				BOOL linearizeDepth;
+				float nearZ; // light space near
+				float farZ; // light space near
+				float expScalarC;
+				DirectX::XMFLOAT3 p0;
+			} esmControl;
 		};
 
 		struct PSEntity
@@ -65,6 +75,17 @@ namespace ESM
 		{
 			DirectX::XMFLOAT2 texelStep;
 			DirectX::XMFLOAT2 p1;
+		};
+	}
+
+	namespace ESMCBuf
+	{
+		struct PSSystem
+		{
+			BOOL linearizeDepth;
+			float nearZ; // light space near
+			float farZ; // light space near
+			float expScalarC;
 		};
 	}
 }
